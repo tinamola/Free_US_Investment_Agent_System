@@ -178,7 +178,7 @@ curl -sSL https://install.python-poetry.org | python3 -
 2. Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/Free_US_Investment_Agent_System.git
+git clone https://github.com/24mlight/Free_US_Investment_Agent_System.git
 cd Free_US_Investment_Agent_System
 ```
 
