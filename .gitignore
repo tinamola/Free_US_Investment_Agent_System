@@ -22,6 +22,9 @@ wheels/
 *.egg
 
 # Virtual Environment
+.env
+.venv/
+env/
 venv/
 ENV/
 
@@ -41,3 +44,4 @@ Thumbs.db
 # Project specific
 logs/
 references/
+src/data/
