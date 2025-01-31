@@ -1,8 +1,7 @@
 import os
 import time
 import logging
-from google import genai
-from dotenv import load_dotenv
+import requests
 from dataclasses import dataclass
 import backoff
 from typing import Optional, Dict, Any
@@ -70,32 +69,11 @@ class ChatCompletion:
     choices: list[ChatChoice]
 
 
-# 获取项目根目录
-project_root = os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__))))
-env_path = os.path.join(project_root, '.env')
+# Ollama 配置
+OLLAMA_API_URL = "http://localhost:11434/api/generate"  # Ollama API 地址
+MODEL = "deepseek-r1:7b"  # 使用的模型
 
-# 加载环境变量
-if os.path.exists(env_path):
-    load_dotenv(env_path, override=True)
-    logger.info(f"{SUCCESS_ICON} 已加载环境变量: {env_path}")
-else:
-    logger.warning(f"{ERROR_ICON} 未找到环境变量文件: {env_path}")
-
-# 验证环境变量
-api_key = os.getenv("GEMINI_API_KEY")
-model = os.getenv("GEMINI_MODEL")
-
-if not api_key:
-    logger.error(f"{ERROR_ICON} 未找到 GEMINI_API_KEY 环境变量")
-    raise ValueError("GEMINI_API_KEY not found in environment variables")
-if not model:
-    model = "gemini-1.5-flash"
-    logger.info(f"{WAIT_ICON} 使用默认模型: {model}")
-
-# 初始化 Gemini 客户端
-client = genai.Client(api_key=api_key)
-logger.info(f"{SUCCESS_ICON} Gemini 客户端初始化成功")
+logger.info(f"{SUCCESS_ICON} Ollama 配置成功: {OLLAMA_API_URL}, 模型: {MODEL}")
 
 
 @backoff.on_exception(
@@ -103,28 +81,38 @@ logger.info(f"{SUCCESS_ICON} Gemini 客户端初始化成功")
     (Exception),
     max_tries=5,
     max_time=300,
-    giveup=lambda e: "AFC is enabled" not in str(e)
+    giveup=lambda e: "API limit" not in str(e)
 )
-def generate_content_with_retry(model, contents, config=None):
+def generate_content_with_retry(prompt: str, config: Optional[Dict[str, Any]] = None):
     """带重试机制的内容生成函数"""
     try:
-        logger.info(f"{WAIT_ICON} 正在调用 Gemini API...")
-        logger.info(f"请求内容: {contents[:500]}..." if len(
-            str(contents)) > 500 else f"请求内容: {contents}")
+        logger.info(f"{WAIT_ICON} 正在调用 Ollama API...")
+        logger.info(f"请求内容: {prompt[:500]}..." if len(prompt) > 500 else f"请求内容: {prompt}")
         logger.info(f"请求配置: {config}")
 
-        response = client.models.generate_content(
-            model=model,
-            contents=contents,
-            config=config
-        )
+        # 准备请求体
+        payload = {
+            "model": MODEL,
+            "prompt": prompt,
+            "stream": False  # 设置为 True 以流式传输响应
+        }
+
+        # 调用 Ollama API
+        response = requests.post(OLLAMA_API_URL, json=payload)
+
+        if response.status_code != 200:
+            raise Exception(f"API 返回错误: {response.status_code} - {response.text}")
+
+        # 解析响应
+        response_data = response.json()
+        generated_text = response_data.get("response", "")
 
         logger.info(f"{SUCCESS_ICON} API 调用成功")
-        logger.info(f"响应内容: {response.text[:500]}..." if len(
-            str(response.text)) > 500 else f"响应内容: {response.text}")
-        return response
+        logger.info(f"响应内容: {generated_text[:500]}..." if len(generated_text) > 500 else f"响应内容: {generated_text}")
+        return generated_text
+
     except Exception as e:
-        if "AFC is enabled" in str(e):
+        if "API limit" in str(e):
             logger.warning(f"{ERROR_ICON} 触发 API 限制，等待重试... 错误: {str(e)}")
             time.sleep(5)
             raise e
@@ -133,13 +121,10 @@ def generate_content_with_retry(model, contents, config=None):
         raise e
 
 
-def get_chat_completion(messages, model=None, max_retries=3, initial_retry_delay=1):
+def get_chat_completion(messages, max_retries=3, initial_retry_delay=1):
     """获取聊天完成结果，包含重试逻辑"""
     try:
-        if model is None:
-            model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
-
-        logger.info(f"{WAIT_ICON} 使用模型: {model}")
+        logger.info(f"{WAIT_ICON} 使用模型: {MODEL}")
         logger.debug(f"消息内容: {messages}")
 
         for attempt in range(max_retries):
@@ -164,13 +149,12 @@ def get_chat_completion(messages, model=None, max_retries=3, initial_retry_delay
                     config['system_instruction'] = system_instruction
 
                 # 调用 API
-                response = generate_content_with_retry(
-                    model=model,
-                    contents=prompt.strip(),
+                response_text = generate_content_with_retry(
+                    prompt=prompt.strip(),
                     config=config
                 )
 
-                if response is None:
+                if not response_text:
                     logger.warning(
                         f"{ERROR_ICON} 尝试 {attempt + 1}/{max_retries}: API 返回空值")
                     if attempt < max_retries - 1:
@@ -180,14 +164,10 @@ def get_chat_completion(messages, model=None, max_retries=3, initial_retry_delay
                         continue
                     return None
 
-                # 转换响应格式
-                chat_message = ChatMessage(content=response.text)
-                chat_choice = ChatChoice(message=chat_message)
-                completion = ChatCompletion(choices=[chat_choice])
-
-                logger.debug(f"API 原始响应: {response.text}")
+                # 返回响应内容
+                logger.debug(f"API 原始响应: {response_text}")
                 logger.info(f"{SUCCESS_ICON} 成功获取响应")
-                return completion.choices[0].message.content
+                return response_text
 
             except Exception as e:
                 logger.error(
